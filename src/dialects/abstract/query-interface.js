@@ -6,6 +6,8 @@ const Utils = require('../../utils');
 const DataTypes = require('../../data-types');
 const Transaction = require('../../transaction');
 const QueryTypes = require('../../query-types');
+const InstanceValidator = require("../../instance-validator");
+const Model = require('../../model');
 
 /**
  * The interface that Sequelize uses to talk to all databases
@@ -877,6 +879,52 @@ class QueryInterface {
   async bulkInsert(tableName, records, options, attributes) {
     options = { ...options };
     options.type = QueryTypes.INSERT;
+    if (options?.validateByModel?.model &&
+      options?.validateByModel?.model.prototype instanceof Model &&
+      Array.isArray(records)) {
+      /**
+       * the issue I was trying to resolve was to be able to use my model validations
+       * when seeding data with bulkInsert. 
+       * 
+       * I noticed that the only way to get data to seed and use validations was to add
+       * a custom validator to bulkInsert model attributes.
+       * 
+       * ex:
+       * {
+            email: {
+              type: {
+                validate: function(item, options) {
+                  console.log(`Custom validator on test,validating row: ${this} value: ${item}`);
+                  if (!validator.isEmail(item, options)) {
+                    throw Error('hey, this validator worked, no row added');
+                  }
+                }
+              }
+              
+            }
+        }
+       * 
+       *
+       * This would work, but only if I set the queryGenerator.typeValidation to true in my seeder file.
+       * 
+       * I doesn't seem seeder validation works in 6.21.4 source, or at least I wasn't able to figure out
+       * how to get it to work with v6 sequelize documentation. 
+       * 
+       * I wrote this up to try and use model validations with an options property called validateByModel, which has a model inside of it.
+       */
+      this.queryGenerator.typeValidation = true;
+      const validationPromiseArr = [];
+      records.forEach(function(record) {
+        const innerOptions = {
+          defaultFields: options?.validateByModel?.model.rawAttributes,
+          fields: Object.keys(record)
+        }
+        const model = new options.validateByModel.model(record, innerOptions);
+        const validationPromise = new InstanceValidator(model, innerOptions).validate();
+        validationPromiseArr.push(validationPromise);
+      });
+      await Promise.all(validationPromiseArr);
+    }
 
     const results = await this.sequelize.query(
       this.queryGenerator.bulkInsertQuery(tableName, records, options, attributes),
